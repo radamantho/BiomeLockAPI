@@ -66,6 +66,26 @@ All queries refer to the local player.
 
 Subscribing before BiomeLock is loaded is fine: the handlers are attached as soon as BiomeLock is found.
 
+### Restriction bypass
+
+Lifts the BiomeLock restriction at chosen world positions, for example inside a player territory. Requires BiomeLock 1.2.1 or newer; with older versions or without BiomeLock the calls do nothing.
+
+```csharp
+private static bool InsideMyArea(Vector3 position) => MyAreas.Contains(position);
+
+API.AddRestrictionBypass(InsideMyArea);
+API.RemoveRestrictionBypass(InsideMyArea);
+```
+
+| Member | Description |
+|---|---|
+| `AddRestrictionBypass(Func<Vector3, bool>)` | Registers a check. Return `true` to allow the local player at that position. |
+| `RemoveRestrictionBypass(Func<Vector3, bool>)` | Removes a registered check. Pass the same delegate used to register. |
+
+- The check runs during BiomeLock checks, many times per second, so it **must be fast** (no allocations, no physics queries).
+- A check that throws an exception is removed and the error is logged.
+- Registering before BiomeLock is loaded is fine: the check is added as soon as BiomeLock is found.
+
 ## Building
 
 Open `BiomeLockAPI.sln` and build. The references are in `Libs/`. A prebuilt `BiomeLockAPI.dll` is included at the repository root.

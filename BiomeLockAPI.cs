@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using UnityEngine;
 
 namespace BiomeLockAPI
 {
@@ -26,7 +27,11 @@ namespace BiomeLockAPI
         private static Func<Heightmap.Biome, bool>? _isBiomeLocked;
         private static Func<bool>? _isRestricted;
 
+        private static Action<Func<Vector3, bool>>? _addRestrictionBypass;
+        private static Action<Func<Vector3, bool>>? _removeRestrictionBypass;
+
         private static readonly List<(string EventName, Delegate Handler)> Pending = new();
+        private static readonly List<Func<Vector3, bool>> PendingBypasses = new();
 
         /// <summary>True if BiomeLock is installed and loaded.</summary>
         public static bool IsLoaded => Resolve();
@@ -90,6 +95,28 @@ namespace BiomeLockAPI
             return key.StartsWith(PrivatePrefix, StringComparison.Ordinal) ? key.Substring(PrivatePrefix.Length) : key;
         }
 
+        /// <summary>
+        /// Registers a check that lifts the BiomeLock restriction at a world position (return true to allow).
+        /// It runs during BiomeLock checks, so it must be fast. Exceptions remove the check.
+        /// Does nothing without BiomeLock or with a BiomeLock version older than 1.2.1.
+        /// </summary>
+        public static void AddRestrictionBypass(Func<Vector3, bool> bypass)
+        {
+            if (bypass == null) return;
+
+            if (Resolve()) _addRestrictionBypass?.Invoke(bypass);
+            else if (!PendingBypasses.Contains(bypass)) PendingBypasses.Add(bypass);
+        }
+
+        /// <summary>Removes a check registered with AddRestrictionBypass.</summary>
+        public static void RemoveRestrictionBypass(Func<Vector3, bool> bypass)
+        {
+            if (bypass == null) return;
+
+            PendingBypasses.Remove(bypass);
+            if (Resolve()) _removeRestrictionBypass?.Invoke(bypass);
+        }
+
         /// <summary>Raised when the local player gains a private key. Argument: the private key ("bl_...").</summary>
         public static event Action<string> OnPrivateKeyAdded
         {
@@ -141,7 +168,7 @@ namespace BiomeLockAPI
             if (_impl != null) return true;
 
             int now = Environment.TickCount;
-            if (unchecked(now - _nextResolveTick) < 0) return false;
+            if (_nextResolveTick != 0 && unchecked(now - _nextResolveTick) < 0) return false;
             _nextResolveTick = unchecked(now + ResolveRetryMs);
 
             Type? impl = FindImplType();
@@ -167,6 +194,13 @@ namespace BiomeLockAPI
                 impl.GetEvent(eventName)?.AddEventHandler(null, handler);
             Pending.Clear();
 
+            _addRestrictionBypass = OptionalMethod<Action<Func<Vector3, bool>>>(impl, "AddRestrictionBypass");
+            _removeRestrictionBypass = OptionalMethod<Action<Func<Vector3, bool>>>(impl, "RemoveRestrictionBypass");
+
+            foreach (Func<Vector3, bool> bypass in PendingBypasses)
+                _addRestrictionBypass?.Invoke(bypass);
+            PendingBypasses.Clear();
+
             return true;
         }
 
@@ -186,6 +220,20 @@ namespace BiomeLockAPI
             MethodInfo method = impl.GetMethod(name, BindingFlags.Public | BindingFlags.Static)
                 ?? throw new MissingMethodException(ImplTypeName, name);
             return (T)Delegate.CreateDelegate(typeof(T), method);
+        }
+
+        private static T? OptionalMethod<T>(Type impl, string name) where T : Delegate
+        {
+            try
+            {
+                Type[] parameters = Array.ConvertAll(typeof(T).GetMethod("Invoke")!.GetParameters(), p => p.ParameterType);
+                MethodInfo? method = impl.GetMethod(name, BindingFlags.Public | BindingFlags.Static, null, parameters, null);
+                return method == null ? null : (T)Delegate.CreateDelegate(typeof(T), method);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static Func<TResult> Getter<TResult>(Type impl, string name)
